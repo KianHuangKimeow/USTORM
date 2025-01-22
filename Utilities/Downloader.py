@@ -5,13 +5,37 @@ import os
 from urllib.request import build_opener
 
 
-def downloadFromRda(distDir: str, beginTimeStr: str, endTimeStr: str):
+def download(url: str, dist: str, override: bool = False):
+    ofile = os.path.basename(url)
+    dir = os.path.dirname(dist)
+    if not os.path.isdir(dir):
+        sys.stdout.write(
+            dir + " does not exist, making one ... ")
+        sys.stdout.flush()
+        os.makedirs(dir)
+        sys.stdout.write("done\n")
+    if os.path.exists(dist) and not override:
+        sys.stdout.write(ofile + " exists. Skip.\n")
+    else:
+        sys.stdout.write("downloading " + ofile + " ... ")
+        sys.stdout.flush()
+        opener = build_opener()
+        infile = opener.open(url)
+        outfile = open(dist, "wb")
+        outfile.write(infile.read())
+        outfile.close()
+        sys.stdout.write("done\n")
+
+def downloadFromRda(distDir: str, beginTimeStr: str, endTimeStr: str, override: bool = False):
     beginTime = datetime.datetime.strptime(beginTimeStr, "%Y%m%d_%H")
     endTime = datetime.datetime.strptime(endTimeStr, "%Y%m%d_%H")
 
     urlPrefix = 'https://data.rda.ucar.edu/d633000/'
 
     variableMap = {
+        'e5.oper.invariant': [
+            '128_129_z.ll025sc',  # Geopotential at surface (m2 s-2)
+        ],
         # e5.oper.an.pl: pressure-level analysis
         'e5.oper.an.pl': [
             '128_060_pv.ll025sc',  # Potential vorticity (K m2 kg-1 s-1)
@@ -36,8 +60,14 @@ def downloadFromRda(distDir: str, beginTimeStr: str, endTimeStr: str):
     for t in typeList:
         downloadedMap[t] = False
 
-    opener = build_opener()
-
+    for var in variableMap['e5.oper.invariant']:
+        filenameStr = (
+            'e5.oper.invariant/197901/e5.oper.invariant.' +
+            var + '.1979010100_1979010100.nc')
+        currentUrl = urlPrefix + filenameStr
+        currentDist = distDir + '/' + filenameStr
+        download(currentUrl, currentDist, override)
+        
     currentTime = beginTime
     while currentTime <= endTime:
         yearStr = currentTime.strftime("%Y")
@@ -60,21 +90,7 @@ def downloadFromRda(distDir: str, beginTimeStr: str, endTimeStr: str):
                         '/' + t + '.' + var + '.' + fileSuffix
                     currentUrl = urlPrefix + filenameStr
                     currentDist = distDir + '/' + filenameStr
-                    ofile = os.path.basename(currentUrl)
-                    currentDir = os.path.dirname(currentDist)
-                    if not os.path.isdir(currentDir):
-                        sys.stdout.write(
-                            currentDir + " does not exist, making one ... ")
-                        sys.stdout.flush()
-                        os.makedirs(currentDir)
-                        sys.stdout.write("done\n")
-                    sys.stdout.write("downloading " + ofile + " ... ")
-                    sys.stdout.flush()
-                    infile = opener.open(currentUrl)
-                    outfile = open(currentDist, "wb")
-                    outfile.write(infile.read())
-                    outfile.close()
-                    sys.stdout.write("done\n")
+                    download(currentUrl, currentDist, override)
                 if t in monthlyTypeList:
                     downloadedMap[t] = True
         currentTime += datetime.timedelta(days=1)

@@ -65,7 +65,7 @@ class ERA5InputName:
                     if var in variables:
                         if varType == 'e5.oper.invariant':
                             fileSuffix = '1979010100_1979010100.nc'
-                            filenameStr = varType + '/' + varType + '.' + var + '.' + fileSuffix
+                            filenameStr = varType + '/197901/' + varType + '.' + var + '.' + fileSuffix
                             self.invariantPaths_[
                                 var] = self.root_ + '/' + filenameStr
                         elif varType in monthlyTypeList:
@@ -93,7 +93,7 @@ class ERA5InputName:
     def dump(self, filename):
         basename = os.path.basename(filename)
         if not os.path.exists(filename):
-            logger.error(f'{basename} does not exist!')
+            logger.warning(f'{basename} does not exist! Creating a new one...')
         with open(filename, "w") as f:
             f.write(self.inputNameList_)
 
