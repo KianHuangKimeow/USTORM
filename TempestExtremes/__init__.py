@@ -4,3 +4,6 @@ from .TempestExtremes import (
 from .ERA5InputName import (
     ERA5InputName
 )
+from .SyCLoPSClassifier import (
+  SyCLoPSClassifier
+)

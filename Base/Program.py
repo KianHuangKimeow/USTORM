@@ -1,5 +1,6 @@
 import logging
 import os
+import platform
 import subprocess
 from typing import Optional, Sequence
 
@@ -35,6 +36,8 @@ class Program:
 
     def run(self, executable, arg: Optional[Sequence] = [],
             exitMark: Optional[str] = None, exitMarkLoc: Optional[int] = None) -> None:
+        currentOS = platform.system()
+        executable = f'{executable}.exe' if currentOS == 'Windows' else executable
         executablePath = os.path.join(self.path_, executable)
         if not os.path.exists(executablePath):
             raise Exception(f'{executablePath} does not exist!')
