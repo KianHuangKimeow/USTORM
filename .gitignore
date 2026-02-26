@@ -173,3 +173,9 @@ cython_debug/
 .DS_Store
 
 .vscode
+
+Dataset/
+
+Others/
+
+Visualization/Colormap/*

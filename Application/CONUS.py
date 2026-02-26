@@ -1,7 +1,3 @@
-'''
-Details of SyCLoPS algorithms can be found at 
-https://doi.org/10.1029/2024JD041287
-'''
 import argparse
 import datetime
 import os
@@ -11,18 +7,19 @@ import xarray as xr
 
 sys.path.insert(0, os.path.abspath('.'))
 
-from Base import getBoxMask
-from Preprocess.Model import GaussianSmoother, PreprocessERA5, Watershed
-from System import defineScratch
+from Base import getInnerBoxMask
+from Utilities import downloadRdaCONUS404
+from Preprocess.Model import PreprocessWRF, GaussianSmoother, Watershed
 from TempestExtremes import (
-  ERA5InputName, TempestExtremes, SyCLoPSClassifier, MCSClassifier, BlobStatsParallelization)
-from Utilities import downloadRdaERA5
+    CONUS404InputName, TempestExtremes, SyCLoPSClassifier, MCSClassifier, 
+    BlobStatsParallelization)
+from System import defineScratch
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description=('USTORM (Unified Storm Tracking for Observations and '
         'multi-Resolution Models) low pressure system tracking and classification '
-        'workflow script for ERA5.'))
+        'workflow script for CONUS404.'))
     parser.add_argument(
         '--begin', action='store', metavar='%YYYY%mm%dd_%H',
         required=True,
@@ -88,21 +85,6 @@ if __name__ == '__main__':
         help=('The format of result to be stored. Supported: '
               'parquet (default), xlsx, all (i.e., parquet & xlsx)')
     )
-    parser.add_argument(
-        '--regional_mask_file', action='store', metavar='RegionalMask',
-        default=None,
-        help=('The regional mask file.')
-    )
-    parser.add_argument(
-        '--regional_mask_variable', action='store', metavar='RegionalMaskVar',
-        default='RegionalMask',
-        help=('The regional mask variable name.')
-    )
-    parser.add_argument(
-        '--inner_mask_variable', action='store', metavar='InnerMaskVar',
-        default='InnerBoxMask',
-        help=('The regional mask variable name.')
-    )
     parserArgs = parser.parse_args()
     tempestExtremesPath = vars(parserArgs).get('te_path')
     mpirunPath = vars(parserArgs).get('mpirun')
@@ -123,41 +105,122 @@ if __name__ == '__main__':
     reusltFormat = vars(parserArgs).get('result_format')
     step = vars(parserArgs).get('step')
     nproc = vars(parserArgs).get('nproc')
-    regionalMaskFilename = vars(parserArgs).get('regional_mask_file')
-    regionalMaskVar = vars(parserArgs).get('regional_mask_variable')
-    innerMaskVar = vars(parserArgs).get('inner_mask_variable')
 
-    beginTime = datetime.datetime.strptime(beginTimeStr, "%Y%m%d_%H")
-    endTime = datetime.datetime.strptime(endTimeStr, "%Y%m%d_%H")
-
-    stitchNodesOutput = os.path.join(workDir, 'StitchNodesResult.txt')
-    lpsMaskBlobStatsOutput = os.path.join(workDir, 'LPSMaskBlobStatsOutput.txt')
-    blobStatsOutput = os.path.join(workDir, 'BlobStatsOutput.txt')
-    frontalBlobStatsOutput = os.path.join(workDir, 'FrontalBlobStatsOutput.txt')
-    frontClassifierPreprocessFile = os.path.join(workDir, f'FrontPreprocess_{beginTime:%Y%m%d%H}_{endTime:%Y%m%d%H}.parquet')
-    tmpInvariantPath = ''
-
-    # Download ERA5 from RDA
-    downloadRdaERA5(dataRoot, beginTime, endTime, override=False)
+    # Download CONUS404 from RDA
+    downloadRdaCONUS404(dataRoot, beginTimeStr, endTimeStr, step=step, override=False)
 
     preprocessDir = f'{workDir}/preprocess'
 
     tempestExtremes = TempestExtremes(tempestExtremesPath, mpirunPath, mpiArg)
 
+    beginTime = datetime.datetime.strptime(beginTimeStr, "%Y%m%d_%H")
+    endTime = datetime.datetime.strptime(endTimeStr, "%Y%m%d_%H")
+    stitchNodesOutput = os.path.join(workDir, 'StitchNodesResult.txt')
+    lpsMaskBlobStatsOutput = os.path.join(workDir, 'LPSMaskBlobStatsOutput.txt')
+    blobStatsOutput = os.path.join(workDir, 'BlobStatsOutput.txt')
+    frontalBlobStatsOutput = os.path.join(workDir, 'FrontalBlobStatsOutput.txt')
     classifierPreprocessFile = os.path.join(workDir, f'Preprocess_{beginTime:%Y%m%d%H}_{endTime:%Y%m%d%H}.parquet')
+    frontClassifierPreprocessFile = os.path.join(workDir, f'FrontPreprocess_{beginTime:%Y%m%d%H}_{endTime:%Y%m%d%H}.parquet')
     classifierFinalFile = os.path.join(workDir, f'Result_{beginTime:%Y%m%d%H}_{endTime:%Y%m%d%H}')
-    inputName = ERA5InputName(root=dataRoot)
+    inputName = CONUS404InputName(root=dataRoot)
     inputName.setDateTime(begin=beginTime, end=endTime)
-    mlSpFiles = inputName.generateInput(
-        ['128_134_sp.regn320sc'], output=True, step=6).splitlines()
-    mlTFiles = inputName.generateInput(
-        ['0_5_0_0_0_t.regn320sc'], output=True, step=6).splitlines()
-    mlQFiles = inputName.generateInput(
-        ['0_5_0_1_0_q.regn320sc'], output=True, step=6).splitlines()
-    mlUFiles = inputName.generateInput(
-        ['0_5_0_2_2_u.regn320uv'], output=True, step=6).splitlines()
-    mlVFiles = inputName.generateInput(
-        ['0_5_0_2_3_v.regn320uv'], output=True, step=6).splitlines()
+    inputName.generateInput(types=['wrf3d'])
+    fileList = inputName.getInputAsList()
+    inputName.generateInput(types=['wrf2d'])
+    wrf2dList = inputName.getInputAsList()
+    # Pre-process CONUS 404
+    originalInvariantPath = inputName.getInvariantPaths().get('invariant')
+    preprocessor = PreprocessWRF(fileList, wrf2dFiles=wrf2dList)
+    preprocessor.setInvariantPath(originalInvariantPath)
+    varRaname = dict(
+        lev = 'ZNU',
+        ilev = 'ZNW',
+    )
+    varUnitChange = dict(
+        Z = 'm'
+    )
+    varProcess = dict(
+        Z = dict(
+            zCoord = 'P',
+            var = 'Z',
+            level = [92500, 85000, 70000, 50000, 30000],
+            suffix = [925, 850, 700, 500, 300],
+            method = 'linear',
+        ),
+        Vo = dict(
+            derivative = 'vo',
+            zCoord = 'P',
+            var = ['U', 'V'],
+            level = [50000],
+            suffix = [500],
+            mapFacX = 'MAPFAC_MX',
+            mapFacY = 'MAPFAC_MY',
+            method = 'linear',
+        ),
+        SLP = dict(
+            derivative = 'slp',
+            zCoord = 'P',
+            var = ['Z', 'TK', 'P', 'QVAPOR'],
+        ),
+        U = dict(
+            zCoord = 'P',
+            var = 'U',
+            level = [85000, 70000, 20000],
+            suffix = [850, 700, 200],
+            method = 'linear',
+        ),
+        V = dict(
+            zCoord = 'P',
+            var = 'V',
+            level = [85000, 20000],
+            suffix = [850, 200],
+            method = 'linear',
+        ),
+        ULev = dict(
+            var = 'U',
+            level = [11],
+            suffix = [12],
+            method = 'linear',
+        ),
+        VLev = dict(
+            var = 'V',
+            level = [11],
+            suffix = [12],
+            method = 'linear',
+        ),
+        T = dict(
+            zCoord = 'P',
+            var = 'TK',
+            level = [85000],
+            suffix = [850],
+            method = 'linear',
+        ),
+        RH = dict(
+            derivative = 'relative_humidity_from_mixing_ratio',
+            zCoord = 'P',
+            var = ['P', 'TK', 'QVAPOR'],
+            level = [85000, 70000, 10000],
+            suffix = [850, 700, 100],
+            method = 'linear',
+        ),
+        RHLev = dict(
+            derivative = 'relative_humidity_from_mixing_ratio',
+            var = ['P', 'TK', 'QVAPOR'],
+            level = [42],
+            suffix = [43], # ~100hPa
+            method = 'linear',
+        ),
+        ThetaLev = dict(
+            derivative = 'potential_temperature',
+            level = [11],
+            suffix = [12],
+            var = ['TK', 'P'],
+            method = 'linear',
+        ),
+    )
+    preprocessedList = preprocessor.process(varProcess, preprocessDir, requireMapFactor=False, 
+                         varRename=varRaname, varUnitChange=varUnitChange,
+                         nproc=nproc, override=False)
 
     # Detect low pressure systems
     inputFileName = os.path.join(workDir, 'DetectNodesInputFilenames.txt')
@@ -165,107 +228,32 @@ if __name__ == '__main__':
     logRoot = os.path.join(workDir, 'log')
     if not os.path.exists(logRoot):
         os.makedirs(logRoot)
-    invariantPaths = inputName.getInvariantPaths()
+    invariantBasename = os.path.basename(originalInvariantPath)
+    tmpInvariantPath = os.path.join(workDir, invariantBasename)
+    if not os.path.exists(tmpInvariantPath):
+        invariantDataset = xr.open_dataset(originalInvariantPath)
+        invariantDataset = invariantDataset[dict(Time=0)]
+        invariantDataset = invariantDataset.drop_vars('Time')
+        if 'HGT' in invariantDataset.variables.keys():
+            invariantDataset = invariantDataset.rename_vars({
+                                                            'HGT': 'Z0'})
+        innerBoxMask = getInnerBoxMask(
+            invariantDataset['XLONG'].to_numpy(), 
+            invariantDataset['XLAT'].to_numpy(), offset=2.0)
+        invariantDataset['InnerBoxMask'] = invariantDataset['LANDMASK'].copy(
+            data=innerBoxMask)
+        invariantDataset.to_netcdf(tmpInvariantPath)
 
-    preprocessor = PreprocessERA5(
-        mlSpFiles=mlSpFiles, mlTFiles=mlTFiles, mlQFiles=mlQFiles,
-        mlUFiles=mlUFiles, mlVFiles=mlVFiles)
-    varProcess = dict(
-        RLev = dict(
-            derivative = 'relative_humidity_from_specific_humidity',
-            level = [61],
-            suffix = [62],
-            method = 'linear',
-        ),
-        ThetaLev = dict(
-            derivative = 'potential_temperature',
-            level = [114],
-            suffix = [115],
-            method = 'linear',
-        ),
-    )
-    
-    inputName.generateInput()
-    if invariantPaths:
-        for var in invariantPaths.keys():
-            currentInvariantPath = invariantPaths[var]
-            currentInvariantBasename = os.path.basename(currentInvariantPath)
-            tmpInvariantPath = os.path.join(workDir, currentInvariantBasename)
-            if not os.path.exists(tmpInvariantPath):
-                invariantDataset = xr.open_dataset(currentInvariantPath)
-                invariantDataset = invariantDataset[dict(time=0)]
-                invariantDataset = invariantDataset.drop_vars('time')
-                if 'Z' in invariantDataset.variables.keys():
-                    invariantDataset = invariantDataset.rename_vars({
-                                                                    'Z': 'Z0'})
-                invariantDataset.to_netcdf(tmpInvariantPath)
-            inputName.replace(currentInvariantPath, tmpInvariantPath)
-    
-    maskFileMl = None
-    if regionalMaskFilename is not None and invariantPaths:
-        currentInvariantPathPl = list(invariantPaths.values())
-        currentInvariantPathPl = currentInvariantPathPl[0]
-        maskInvariantDs = xr.open_dataset(regionalMaskFilename)
-        daDomainMask = maskInvariantDs[innerMaskVar]
-        maskInvariantDs[regionalMaskVar] = daDomainMask.copy(data=xr.zeros_like(daDomainMask))
-        daDomainMask.close()
-        if 'Z0' in maskInvariantDs.variables.keys():
-            maskInvariantDs = maskInvariantDs.drop_vars(['Z0'])
-        maskInvariantPath = preprocessor.regrid(
-            workDir, [maskInvariantDs], currentInvariantPathPl, 'nearest_s2d', 
-            fileSuffix='ll025sc', varRename={'XLONG': 'lon', 'XLAT': 'lat'},
-            regridderSuffix='CONUS404.ll025sc', nproc=nproc)
-        inputName.addInvariantPath('mask.pl', maskInvariantPath[0])
-        tmpInvariantDs = xr.open_dataset(maskInvariantPath[0])
-        tmpInvariantDs[regionalMaskVar] = tmpInvariantDs[regionalMaskVar].copy(
-            data=getBoxMask(
-                tmpInvariantDs['longitude'].to_numpy(), tmpInvariantDs['latitude'].to_numpy(), 
-                maskInvariantDs['XLONG'].to_numpy(), maskInvariantDs['XLAT'].to_numpy(), 
-                offset=0.04))
-        tmpInvariantDs.to_netcdf(f'{maskInvariantPath[0]}_tmp')
-        tmpInvariantDs.close()
-        os.rename(f'{maskInvariantPath[0]}_tmp', maskInvariantPath[0])
-
-        currentInvariantPathMl = mlTFiles[0]
-        maskInvariantPath = preprocessor.regrid(
-            workDir, [maskInvariantDs], currentInvariantPathMl, 'nearest_s2d', 
-            fileSuffix='regn320sc', varRename={'XLONG': 'lon', 'XLAT': 'lat'},
-            regridderSuffix='CONUS404.regn320sc', nproc=nproc)
-        inputName.addInvariantPath('mask.ml', maskInvariantPath[0])
-        tmpInvariantDs = xr.open_dataset(maskInvariantPath[0])
-        tmpInvariantDs[regionalMaskVar] = tmpInvariantDs[regionalMaskVar].copy(
-            data=getBoxMask(
-                tmpInvariantDs['longitude'].to_numpy(), tmpInvariantDs['latitude'].to_numpy(), 
-                maskInvariantDs['XLONG'].to_numpy(), maskInvariantDs['XLAT'].to_numpy(), 
-                offset=0.04))
-        tmpInvariantDs.to_netcdf(f'{maskInvariantPath[0]}_tmp')
-        tmpInvariantDs.close()
-        os.rename(f'{maskInvariantPath[0]}_tmp', maskInvariantPath[0])
-        maskFileMl = maskInvariantPath[0]
-        maskInvariantDs.close()
-            
-    inputName.generateInput(exclusiveType=['e5.oper.an.ml'], addInvariant=['mask.pl'])
-    if invariantPaths:
-        for var in invariantPaths.keys():
-            currentInvariantPath = invariantPaths[var]
-            currentInvariantBasename = os.path.basename(currentInvariantPath)
-            tmpInvariantPath = os.path.join(workDir, currentInvariantBasename)
-            inputName.replace(currentInvariantPath, tmpInvariantPath)
-    currentInvariantPath = invariantPaths['128_129_z.ll025sc']
-    currentInvariantBasename = os.path.basename(currentInvariantPath)
-    tmpInvariantPath = os.path.join(workDir, currentInvariantBasename)
-
-    preprocessedList = preprocessor.process(varProcess, preprocessDir, 
-                         nproc=nproc, override=False)
-    
-    inputName.dump(inputFileName)
+    with open(inputFileName, 'w') as f:
+        for i,j in zip(preprocessedList, wrf2dList):
+            f.write(f'{i};{j};{tmpInvariantPath}\n')
     with open(outputFileName, 'w') as f:
         currentTime = beginTime
         while currentTime <= endTime:
             currentOutputFile = os.path.join(workDir,
                                              f'DetectNodesOutput_{currentTime:%Y%m%d_%H%M%S}.txt')
             f.write(f'{currentOutputFile}\n')
-            currentTime += datetime.timedelta(days=1)
+            currentTime += datetime.timedelta(hours=step)
 
     logDir = os.path.join(logRoot, 'DetectNodes')
     if not os.path.exists(logDir):
@@ -274,71 +262,70 @@ if __name__ == '__main__':
         '--in_data_list', inputFileName,
         '--out_file_list', outputFileName,
         # Search minimum mean sea level pressure
-        '--searchbymin', 'MSL',
+        '--searchbymin', 'SLP',
         # Mean sea level pressure must increase 10 Pa within a 5.5 GCD
-        '--closedcontourcmd', 'MSL,10,5.5,0',
+        '--closedcontourcmd', 'SLP,10,5.5,0',
         # Merge candidates within a 6.0 GCD, with the lower mean sea level pressure 
         # node taking precedence.
         '--mergedist', '6.0',
+        '--thresholdcmd', 'InnerBoxMask,=,1,0',
         '--outputcmd',
         (
             # Mean sea level pressure (MSLP)
-            'MSL,min,0;'
-            # Maximum 10m wind speed within 2.0 GCD (WS10)
-            '_VECMAG(VAR_10U,VAR_10V),max,2.0;'
+            'SLP,min,0;'
+            # Maximum model bottem wind speed within 2.0 GCD (WS10)
+            '_VECMAG(U10,V10),max,2.0;'
             # Greatest positive closed contour delta of MSLP over a 2.0 GCD (MSLPCC20)
-            'MSL,posclosedcontour,2.0,0;'
+            'SLP,posclosedcontour,2.0,0;'
             # Greatest positive closed contour delta of MSLP over a 5.5 GCD (MSLPCC55)
-            'MSL,posclosedcontour,5.5,0;'
+            'SLP,posclosedcontour,5.5,0;'
             # Average environmental deep-layer (200 - 850 hPa) wind shear 
             # over a 10.0 GCD (DeepShear)
-            '_DIFF(_VECMAG(U(200hPa),V(200hPa)),_VECMAG(U(850hPa),V(850hPa))),avg,10.0;'
+            '_DIFF(_VECMAG(U200,V200),_VECMAG(U850,V850)),avg,10.0;'
             # Greatest decline of the upper-level (300 - 500 hPa) geopotential 
             # thickness within a 6.5 GCD of the maximum thickness node within 
             # a 1.0 GCD of the current node (UppThkCC)
-            '_DIFF(Z(300hPa),Z(500hPa)),negclosedcontour,6.5,1.0;'
+            '_DIFF(Z300,Z500),negclosedcontour,6.5,1.0;'
             # Greatest decline of the mid-level (500 - 700 hPa) geopotential 
             # thickness within a 3.5 GCD of the maximum thickness node within 
             # a 1.0 GCD of the current node (MidThkCC)
-            '_DIFF(Z(500hPa),Z(700hPa)),negclosedcontour,3.5,1.0;'
+            '_DIFF(Z500,Z700),negclosedcontour,3.5,1.0;'
             # Greatest decline of the lower-level (700 - 925 hPa) geopotential 
             # thickness within a 3.5 GCD of the maximum thickness node within 
             # a 1.0 GCD of the current node (LowerThkCC)
-            '_DIFF(Z(700hPa),Z(925hPa)),negclosedcontour,3.5,1.0;'
+            '_DIFF(Z700,Z925),negclosedcontour,3.5,1.0;'
             # Greatest increase of the 500 hPa geopotential within a 3.5 GCD 
             # of the minimum geopotential node within a 1.0 GCD of the current node 
             # (Z500CC)
-            'Z(500hPa),posclosedcontour,3.5,1.0;'
+            'Z500,posclosedcontour,3.5,1.0;'
             # Avarage relative vorticity over a 2.5 GCD (Vo500Avg)
-            'VO(500hPa),avg,2.5;'
+            'Vo500,avg,2.5;'
             # Maximum 100 hPa relative humidity within a 2.5 GCD (RH100Max)
-            'R(100hPa),max,2.5;'
+            'RH100,max,2.5;'
             # Avarage 850 hPa relative humidity within a 2.5 GCD (RH850Avg)
-            'R(850hPa),avg,2.5;'
+            'RH850,avg,2.5;'
             # Avarage 700 hPa relative humidity within a 2.5 GCD (RH700Avg)
-            'R(700hPa),avg,2.5;'
+            'RH700,avg,2.5;'
             # 850 hPa air temperature at the node (T850)
-            'T(850hPa),max,0.0;'
+            'T850,max,0.0;'
             # 850 hPa geopotential at the node (Z850)
-            'Z(850hPa),min,0.0;'
+            'Z850,min,0.0;'
             # 700 hPa geopotential at the node (Z700)
-            'Z(700hPa),min,0.0;'
+            'Z700,min,0.0;'
             # Surface geopotential at the node (Z0)
             'Z0,min,0;'
             # Difference between the weighted area mean of positive and negative 
             # values of 850 hPa eastward wind over a 5.5 GCD (U850Diff)
-            'U(850hPa),posminusnegwtarea,5.5;'
+            'U850,posminusnegwtarea,5.5;'
             # Maximun poleward 200 hPa wind speed within a 1.0 GCD (WS200PMax)
-            '_VECMAG(U(200hPa),V(200hPa)),maxpoleward,1.0'
+            '_VECMAG(U200,V200),maxpoleward,1.0'
         ),
         '--timefilter', '3hr',
-        '--latname', 'latitude',
-        '--lonname', 'longitude',
+        '--latname', 'XLAT',
+        '--lonname', 'XLONG',
+        '--regional',
         '--logdir', logDir
     ]
-    if regionalMaskFilename:
-        detectNodesArg.extend(['--thresholdcmd', f'{innerMaskVar},=,1,0'])
-
     tempestExtremes.run('DetectNodes', detectNodesArg)
 
     inputFileName = outputFileName
@@ -349,7 +336,8 @@ if __name__ == '__main__':
         '--in_fmt',
         (
             'lon,lat,MSLP,WS,MSLPCC20,MSLPCC55,DeepShear,UppThkCC,MidThkCC,LowThkCC,'
-            'Z500CC,Vo500Avg,RH100Max,RH850Avg,RH700Avg,T850,Z850,Z700,Z0,U850Diff,WS200PMax'
+            'Z500CC,Vo500Avg,RH100Max,RH850Avg,RH700Avg,T850,Z850,Z700,Z0,U850Diff,'
+            'WS200PMax'
         ),
         '--range', '4.0',
         '--mintime', '18h',
@@ -361,30 +349,31 @@ if __name__ == '__main__':
     # Calculate smoothed relative vorticity using 850 hPa wind field.
     inputFileName = os.path.join(workDir, 'SmoothedVo850InputFilenames.txt')
     outputFileName = os.path.join(workDir, 'SmoothedVo850_S0.txt')
+    with open(inputFileName, 'w') as f:
+        f.writelines(line + '\n' for line in preprocessedList)
     logDir = os.path.join(logRoot, 'SmoothedVo850_S0')
     if not os.path.exists(logDir):
         os.mkdir(logDir)
-    windFieldFileList = inputName.generateInput(
-        ['0_5_0_2_2_u.regn320uv', '0_5_0_2_3_v.regn320uv'], output=True, step=6).splitlines()
-    inputName.dump(inputFileName)
+    windFieldFileList = preprocessedList
     with open(outputFileName, 'w') as f:
         currentTime = beginTime
         while currentTime <= endTime:
             currentOutputFile = os.path.join(workDir,
                                              f'SmoothedVo850_{currentTime:%Y%m%d_%H%M%S}_S0.nc')
             f.write(f'{currentOutputFile}\n')
-            currentTime += datetime.timedelta(hours=6)
+            currentTime += datetime.timedelta(hours=step)
     variableProcessorArg = [
         '--in_data_list', inputFileName,
         '--out_data_list',  outputFileName,
-        '--var', '_CURL{8,3}(U(114),V(114))',
+        '--var', '_CURL{8,3}(ULev12,VLev12)',
         '--varout', 'Vorticity',
-        '--latname', 'latitude',
-        '--lonname', 'longitude',
+        '--latname', 'XLAT',
+        '--lonname', 'XLONG',
+        '--regional',
         '--timefilter', '3hr',
         '--logdir', logDir
     ]
-    tempestExtremes.run('VariableProcessor', variableProcessorArg)
+    # tempestExtremes.run('VariableProcessor', variableProcessorArg)
 
     # Flip the sign of vorticity in the Southern Hemisphere
     inputFileName = outputFileName
@@ -398,18 +387,19 @@ if __name__ == '__main__':
             currentOutputFile = os.path.join(workDir,
                                              f'SmoothedVo850_{currentTime:%Y%m%d_%H%M%S}_S1.nc')
             f.write(f'{currentOutputFile}\n')
-            currentTime += datetime.timedelta(hours=6)
+            currentTime += datetime.timedelta(hours=step)
     variableProcessorArg = [
         '--in_data_list', inputFileName,
         '--out_data_list',  outputFileName,
         '--var', '_COND(_LAT(),Vorticity,_PROD(Vorticity,-1))',
         '--varout', 'CyclonicVorticity',
-        '--latname', 'latitude',
-        '--lonname', 'longitude',
+        '--latname', 'XLAT',
+        '--lonname', 'XLONG',
+        '--regional',
         '--logdir', logDir
     ]
-    tempestExtremes.run('VariableProcessor', variableProcessorArg)
-
+    # tempestExtremes.run('VariableProcessor', variableProcessorArg)
+    
     # Search for cyclonic regions
     inputFileName = os.path.join(workDir, 'SmoothedVo850_S1.txt')
     outputFileName = os.path.join(workDir, 'DetectBlobsOutputFilenames.txt')
@@ -431,14 +421,29 @@ if __name__ == '__main__':
                                              f'WatershedOutput_{currentTime:%Y%m%d_%H%M%S}.nc')
             vorticityBlobFileList.append(currentOutputFile)
             f.write(f'{currentOutputFile}\n')
-            currentTime += datetime.timedelta(hours=6)
+            currentTime += datetime.timedelta(hours=step)
+
+    # Smooth CyclonicVorticity again for vorticity gradient calculation
+    outputFileName = os.path.join(workDir, 'SmoothedVo850_S2.txt')
+    gaussianSmoothedVorticityFileList = []
+    with open(outputFileName, 'w') as f:
+        currentTime = beginTime
+        while currentTime <= endTime:
+            currentOutputFile = os.path.join(workDir,
+                                             f'SmoothedVo850_{currentTime:%Y%m%d_%H%M%S}_S2.nc')
+            gaussianSmoothedVorticityFileList.append(currentOutputFile)
+            f.write(f'{currentOutputFile}\n')
+            currentTime += datetime.timedelta(hours=step)
+
+    smoother = GaussianSmoother(vorticityFileList, gaussianSmoothedVorticityFileList)
+    smoother.process(vars='CyclonicVorticity', sigma=8.0, nproc=nproc)
 
     # Size blob segmentation with watershed algorithm
     watershedProcessor = Watershed(
-        vorticityFileList, vorticityBlobFileList, nproc=nproc)
+        gaussianSmoothedVorticityFileList, vorticityBlobFileList, nproc=nproc)
     watershedProcessor.process(
         varname='CyclonicVorticity', newVarname='GradientMask', 
-        filterMin=2.0e-5, inverse=True, maskFile=maskFileMl, maskVar=regionalMaskVar)
+        filterMin=2.0e-5, inverse=True)
 
     # Assign indices to the marked blobs
     lpsBlobOutput = None
@@ -456,34 +461,36 @@ if __name__ == '__main__':
                                                 f'AssignBlobIndexOutput_{currentTime:%Y%m%d_%H%M%S}.nc')
                 vorticityBlobFileList.append(currentOutputFile)
                 f.write(f'{currentOutputFile}\n')
-                currentTime += datetime.timedelta(hours=6)
+                currentTime += datetime.timedelta(hours=step)
         stitchBlobsArg = [
             '--in_list', inputFileName,
             '--out_list', outputFileName,
             '--var', 'GradientMask',
             '--outvar', 'GradientMask',
             '--tagonly',
-            '--latname', 'latitude',
-            '--lonname', 'longitude'
+            '--latname', 'XLAT',
+            '--lonname', 'XLONG',
+            '--regional'
         ]
         tempestExtremes.run('StitchBlobs', stitchBlobsArg)
         lpsBlobOutput = outputFileName
 
     # Summary the information of each cyclonic regions, which will be used 
     # in the SyCLoPS classifier by pairing with each low pressure system node
-    windFieldFileList = inputName.generateInput(
-        ['128_131_u.ll025uv', '128_132_v.ll025uv'], output=True, step=6).splitlines()
     inputFileName = os.path.join(workDir, 'BlobStatsInputFilenames.txt')
     with open(inputFileName, 'w') as f:
         for i, j in zip(vorticityBlobFileList, windFieldFileList):
             f.write(f'{i};{j}\n')
     outputFileName = blobStatsOutput
+    mpiNpIndex = mpiArg.index('-np')
+    mpiNProc = int(mpiArg[mpiNpIndex+1])
     blobStatsArg = [
         '--var', 'GradientMask',
         '--out', 'centlon,centlat,minlat,maxlat,minlon,maxlon,area',
-        '--latname', 'latitude',
-        '--lonname', 'longitude',
+        '--latname', 'XLAT',
+        '--lonname', 'XLONG',
         '--out_fulltime',
+        '--regional',
     ]
     blobStatsParallelization = BlobStatsParallelization(
         tempestExtremes, inputFileName, blobStatsArg)
@@ -494,6 +501,9 @@ if __name__ == '__main__':
         for i in vorticityBlobFileList:
             f.write(f'{i}\n')
     outputFileName = os.path.join(workDir, 'LPSMaskOutputFilenames_S0.txt')
+    logDir = os.path.join(logRoot, 'LPSMask')
+    if not os.path.exists(logDir):
+        os.mkdir(logDir)
     lpsMaskFileList = []
     with open(outputFileName, 'w') as f:
         currentTime = beginTime
@@ -502,7 +512,7 @@ if __name__ == '__main__':
                                              f'LPSMaskOutput_{currentTime:%Y%m%d_%H%M%S}_S0.nc')
             f.write(f'{currentOutputFile}\n')
             lpsMaskFileList.append(currentOutputFile)
-            currentTime += datetime.timedelta(hours=6)
+            currentTime += datetime.timedelta(hours=step)
     nodeFileFilterArg = [
         '--in_nodefile', stitchNodesOutput,
         '--in_nodefile_type', 'SN',
@@ -510,16 +520,29 @@ if __name__ == '__main__':
         '--in_fmt',
         (
             'lon,lat,MSLP,WS,MSLPCC20,MSLPCC55,DeepShear,UppThkCC,MidThkCC,LowThkCC,'
-            'Z500CC,Vo500Avg,RH100Max,RH850Avg,RH700Avg,T850,Z850,Z700,Z0,U850Diff,WS200PMax'
+            'Z500CC,Vo500Avg,RH100Max,RH850Avg,RH700Avg,T850,Z850,Z700,Z0,U850Diff,'
+            'WS200PMax'
         ),
         '--out_data_list', outputFileName,
         '--regional',
         '--bydist', '1.0',
         '--maskvar', 'LPSMask',
-        '--latname', 'latitude',
-        '--lonname', 'longitude',
+        '--latname', 'XLAT',
+        '--lonname', 'XLONG',
+        '--logdir', logDir
     ]
     tempestExtremes.run('NodeFileFilter', nodeFileFilterArg)
+
+    # Solution for no longitude/latitude information in NodeFileFilter outputs.
+    dsInvariant = xr.open_dataset(tmpInvariantPath)
+    for i in lpsMaskFileList:
+        ds = xr.open_dataset(i)
+        ds['XLONG'] = dsInvariant['XLONG']
+        ds['XLAT'] = dsInvariant['XLAT']
+        ds.to_netcdf(f'{i}_tmp')
+        ds.close()
+        os.rename(f'{i}_tmp', i)
+    dsInvariant.close()
 
     inputFileName = outputFileName
     outputFileName = os.path.join(workDir, 'LPSMaskOutputFilenames_S1.txt')
@@ -531,15 +554,16 @@ if __name__ == '__main__':
                                              f'LPSMaskOutput_{currentTime:%Y%m%d_%H%M%S}_S1.nc')
             lpsMaskFileList.append(currentOutputFile)
             f.write(f'{currentOutputFile}\n')
-            currentTime += datetime.timedelta(hours=6)
+            currentTime += datetime.timedelta(hours=step)
     stitchBlobsArg = [
         '--in_list', inputFileName,
         '--out_list', outputFileName,
         '--var', 'LPSMask',
         '--outvar', 'LPSMask',
         '--tagonly',
-        '--latname', 'latitude',
-        '--lonname', 'longitude',
+        '--latname', 'XLAT',
+        '--lonname', 'XLONG',
+        '--regional'
     ]
     tempestExtremes.run('StitchBlobs', stitchBlobsArg)
     lpsMaskOutput = outputFileName
@@ -552,10 +576,11 @@ if __name__ == '__main__':
     blobStatsArg = [
         '--var', 'LPSMask',
         '--out', 'centlon,centlat,minlat,maxlat,minlon,maxlon,area',
-        '--latname', 'latitude',
-        '--lonname', 'longitude',
+        '--latname', 'XLAT',
+        '--lonname', 'XLONG',
         '--out_fulltime',
         '--overlapvar', 'GradientMask',
+        '--regional',
     ]
     blobStatsParallelization = BlobStatsParallelization(
         tempestExtremes, inputFileName, blobStatsArg)
@@ -569,31 +594,30 @@ if __name__ == '__main__':
     if not os.path.exists(logDir):
         os.mkdir(logDir)
     with open(inputFileName, 'w') as f:
-        # for i in preprocessedList:
-        #     f.write(f'{i}\n')
-        for i, j, k in zip(mlUFiles, mlVFiles, preprocessedList):
-            f.write(f'{i};{j};{k}\n')
+        for i in preprocessedList:
+            f.write(f'{i}\n')
     with open(outputFileName, 'w') as f:
         currentTime = beginTime
         while currentTime <= endTime:
             currentOutputFile = os.path.join(workDir,
                                              f'FrontalDiagnostic850_{currentTime:%Y%m%d_%H%M%S}_S0.nc')
             f.write(f'{currentOutputFile}\n')
-            currentTime += datetime.timedelta(hours=6)
+            currentTime += datetime.timedelta(hours=step)
     variableProcessorArg = [
         '--in_data_list', inputFileName,
         '--out_data_list',  outputFileName,
-        '--var', ('_PROD(_CURL{4,1}(U(114),V(114)),_GRADMAG{4,1}(ThetaLev115));'
-            '_PROD(_VECDOTGRAD{4,1}(U(114),V(114),ThetaLev115),-1);'
-            '_GRADMAG{4,1}(ThetaLev115);'
-            '_CURL{4,1}(U(114),V(114));'
+        '--var', ('_PROD(_CURL{4,1}(ULev12,VLev12),_GRADMAG{4,1}(ThetaLev12));'
+            '_PROD(_VECDOTGRAD{4,1}(ULev12,VLev12,ThetaLev12),-1);'
+            '_GRADMAG{4,1}(ThetaLev12);'
+            '_CURL{4,1}(ULev12,VLev12);'
             '_PROD(_F(),0.0000045)'),
         '--varout', 'FrontalDiagnostic850Var1;ThetaAdvection850;ThetaGradMagnitude850;FrontalVo850;FrontalDiagnostic850Ref',
-        '--latname', 'latitude',
-        '--lonname', 'longitude',
+        '--latname', 'XLAT',
+        '--lonname', 'XLONG',
+        '--regional',
         '--logdir', logDir
     ]
-    tempestExtremes.run('VariableProcessor', variableProcessorArg)
+    # tempestExtremes.run('VariableProcessor', variableProcessorArg)
 
     # Step 1: calculate F diagnostic
     inputFileName = outputFileName
@@ -609,31 +633,26 @@ if __name__ == '__main__':
                                              f'FrontalDiagnostic850_{currentTime:%Y%m%d_%H%M%S}_S1.nc')
             frontalDiagnostic850FileList.append(currentOutputFile)
             f.write(f'{currentOutputFile}\n')
-            currentTime += datetime.timedelta(hours=6)
+            currentTime += datetime.timedelta(hours=step)
     variableProcessorArg = [
         '--in_data_list', inputFileName,
         '--out_data_list',  outputFileName,
         '--var', ('_PROD(_DIV(FrontalDiagnostic850Var1,FrontalDiagnostic850Ref),_SIGN(_F()))'),
         '--varout', 'FrontalDiagnostic850',
-        '--latname', 'latitude',
-        '--lonname', 'longitude',
+        '--latname', 'XLAT',
+        '--lonname', 'XLONG',
+        '--regional',
         '--logdir', logDir
     ]
-    tempestExtremes.run('VariableProcessor', variableProcessorArg)
+    # tempestExtremes.run('VariableProcessor', variableProcessorArg)
 
     # Search for frontal regions
-    inputFileName = os.path.join(workDir, 'DetectFrontalBlobsInputFilenames.txt')
+    inputFileName = os.path.join(workDir, 'FrontalDiagnostic850_S1.txt')
     outputFileName = os.path.join(workDir, 'DetectFrontalBlobsOutputFilenames.txt')
     logDir = os.path.join(logRoot, 'DetectFrontalBlobs')
     if not os.path.exists(logDir):
         os.mkdir(logDir)
     frontalBlobFileList = []
-    with open(inputFileName, 'w') as f:
-        for i in frontalDiagnostic850FileList:
-            f.write(f'{i}')
-            if maskFileMl is not None:
-                f.write(f';{maskFileMl}')
-            f.write('\n')
     with open(outputFileName, 'w') as f:
         currentTime = beginTime
         while currentTime <= endTime:
@@ -641,19 +660,17 @@ if __name__ == '__main__':
                                              f'DetectFrontalBlobsOutput_{currentTime:%Y%m%d_%H%M%S}.nc')
             frontalBlobFileList.append(currentOutputFile)
             f.write(f'{currentOutputFile}\n')
-            currentTime += datetime.timedelta(hours=6)
-    detectBlobsThresholdCmd = 'FrontalDiagnostic850,>=,1.0,0'
-    if regionalMaskFilename is not None and regionalMaskVar is not None:
-        detectBlobsThresholdCmd += f';{regionalMaskVar},>=,1.0,0'
+            currentTime += datetime.timedelta(hours=step)
     detectBlobsArg = [
         '--in_data_list', inputFileName,
         '--out_list', outputFileName,
         '--thresholdcmd',
-        f'{detectBlobsThresholdCmd}',
+        '(FrontalDiagnostic850,>=,1.0,0)',
         '--geofiltercmd', 'area,>=,1e4km2',
         '--tagvar', 'FrontalMask',
-        '--latname', 'latitude',
-        '--lonname', 'longitude',
+        '--latname', 'XLAT',
+        '--lonname', 'XLONG',
+        '--regional',
         '--timefilter', '3hr',
         '--logdir', logDir
     ]
@@ -675,15 +692,16 @@ if __name__ == '__main__':
                                                 f'AssignFrontalBlobIndexOutput_{currentTime:%Y%m%d_%H%M%S}.nc')
                 frontalBlobFileList.append(currentOutputFile)
                 f.write(f'{currentOutputFile}\n')
-                currentTime += datetime.timedelta(hours=6)
+                currentTime += datetime.timedelta(hours=step)
         stitchBlobsArg = [
             '--in_list', inputFileName,
             '--out_list', outputFileName,
             '--var', 'FrontalMask',
             '--outvar', 'FrontalMask',
             '--tagonly',
-            '--latname', 'latitude',
-            '--lonname', 'longitude',
+            '--latname', 'XLAT',
+            '--lonname', 'XLONG',
+            '--regional'
         ]
         tempestExtremes.run('StitchBlobs', stitchBlobsArg)
         frontalBlobOutput = outputFileName
@@ -692,35 +710,38 @@ if __name__ == '__main__':
     # in the SyCLoPS classifier by pairing with each low pressure system node
     inputFileName = os.path.join(workDir, 'FrontalBlobStatsInputFilenames.txt')
     with open(inputFileName, 'w') as f:
-        for iFrontalBlob, iVortBlob, iPreprocessedFile in zip(
+        for iFrontalBlob, iVortBlob, iPreprocessed in zip(
             frontalBlobFileList, vorticityBlobFileList, preprocessedList):
-            f.write(f'{iFrontalBlob};{iVortBlob};{iPreprocessedFile}\n')
+            f.write(f'{iFrontalBlob};{iVortBlob};{iPreprocessed}\n')
     outputFileName = frontalBlobStatsOutput
     blobStatsArg = [
         '--var', 'FrontalMask',
         '--out', 'centlon,centlat,minlat,maxlat,minlon,maxlon,area',
-        '--latname', 'latitude',
-        '--lonname', 'longitude',
+        '--latname', 'XLAT',
+        '--lonname', 'XLONG',
         '--timefilter', '3hr',
         '--out_fulltime',
+        '--regional',
         '--overlapvar', 'GradientMask',
-        '--sumvar', 'RLev62',
+        '--sumvar', 'RHLev43',
     ]
     blobStatsParallelization = BlobStatsParallelization(
         tempestExtremes, inputFileName, blobStatsArg)
-    blobStatsParallelization.run(outputFileName, nproc=nproc)
+    blobStatsParallelization.run(
+        outputFileName, nproc=nproc)
 
     lpsClassifier = SyCLoPSClassifier(stitchNodesOutput, blobStatsOutput, tmpInvariantPath, 
                                       lpsMaskBlobStatsOutput=lpsMaskBlobStatsOutput,
-                                      nproc=nproc, flagGeopotentialHeight=False, 
-                                      latName='latitude', lonName='longitude')
+                                      nproc=nproc, flagGeopotentialHeight=True, 
+                                      latName='XLAT', lonName='XLONG',
+                                      rhTropicalThreshold=15)
     lpsClassifier.preprocess(classifierPreprocessFile, override=True)
     lpsClassifier.classify(classifierFinalFile, full=fullResult, resultFormat=reusltFormat)
 
     if assignBlobIndex:
         classifierFinalFile = f'{classifierFinalFile}.parquet'
         frontClassifier = MCSClassifier(
-            frontalBlobStatsOutput, classifierFinalFile, 
+            frontalBlobStatsOutput, classifierFinalFile,
             tmpInvariantPath, classifierType='front',
-            regional=False, nproc=nproc)
+            lonName='XLONG', latName='XLAT', regional=True, nproc=nproc)
         frontClassifier.preprocess(frontClassifierPreprocessFile, override=True)

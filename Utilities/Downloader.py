@@ -1,96 +1,50 @@
-import calendar
-import datetime
 import sys
 import os
 from urllib.request import build_opener
 
+from Base import Program
+
+class Wget(Program):
+    def __init__(self, path: str):
+        super().__init__(self.__class__.__name__, path)
 
 def download(url: str, dist: str, override: bool = False):
     ofile = os.path.basename(url)
     dir = os.path.dirname(dist)
     if not os.path.isdir(dir):
         sys.stdout.write(
-            dir + " does not exist, making one ... ")
+            dir + ' does not exist, making one ... ')
         sys.stdout.flush()
         os.makedirs(dir)
         sys.stdout.write("done\n")
     if os.path.exists(dist) and not override:
-        sys.stdout.write(ofile + " exists. Skip.\n")
+        sys.stdout.write(ofile + ' exists. Skip.\n')
     else:
-        sys.stdout.write("downloading " + ofile + " ... ")
+        sys.stdout.write('downloading ' + ofile + ' ... ')
         sys.stdout.flush()
         opener = build_opener()
         infile = opener.open(url)
-        outfile = open(dist, "wb")
+        outfile = open(dist, 'wb')
         outfile.write(infile.read())
         outfile.close()
+        sys.stdout.write('done\n')
+
+
+def downloadWget(url: str, dist: str, override: bool = False):
+    ofile = os.path.basename(url)
+    dir = os.path.dirname(dist)
+    wget = Wget('')
+    if not os.path.isdir(dir):
+        sys.stdout.write(
+            dir + ' does not exist, making one ... ')
+        sys.stdout.flush()
+        os.makedirs(dir)
         sys.stdout.write("done\n")
-
-def downloadFromRda(distDir: str, beginTimeStr: str, endTimeStr: str, override: bool = False):
-    beginTime = datetime.datetime.strptime(beginTimeStr, "%Y%m%d_%H")
-    endTime = datetime.datetime.strptime(endTimeStr, "%Y%m%d_%H")
-
-    urlPrefix = 'https://data.rda.ucar.edu/d633000/'
-
-    variableMap = {
-        'e5.oper.invariant': [
-            '128_129_z.ll025sc',  # Geopotential at surface (m2 s-2)
-        ],
-        # e5.oper.an.pl: pressure-level analysis
-        'e5.oper.an.pl': [
-            '128_060_pv.ll025sc',  # Potential vorticity (K m2 kg-1 s-1)
-            '128_129_z.ll025sc',  # Geopotential (m2 s-2)
-            '128_130_t.ll025sc',  # Temperature (K)
-            '128_131_u.ll025uv',  # U component of wind (m s-1)
-            '128_132_v.ll025uv',  # V component of wind (m s-1)
-            '128_133_q.ll025sc',  # Specific humidity (kg kg-1)
-            '128_138_vo.ll025sc',  # Vorticity (relative) (s-1)
-            '128_157_r.ll025sc',  # Relative humidity (%)
-        ],
-        # e5.oper.an.sfc: surface (single-level) analysis
-        'e5.oper.an.sfc': [
-            '128_151_msl.ll025sc',  # Mean sea level pressure (Pa)
-            '128_165_10u.ll025sc',  # 10 metre U wind component (m s-1)
-            '128_166_10v.ll025sc',  # 10 metre U wind component (m s-1)
-        ]
-    }
-    typeList = ['e5.oper.an.pl', 'e5.oper.an.sfc']
-    monthlyTypeList = ['e5.oper.an.sfc']
-    downloadedMap = {}
-    for t in typeList:
-        downloadedMap[t] = False
-
-    for var in variableMap['e5.oper.invariant']:
-        filenameStr = (
-            'e5.oper.invariant/197901/e5.oper.invariant.' +
-            var + '.1979010100_1979010100.nc')
-        currentUrl = urlPrefix + filenameStr
-        currentDist = distDir + '/' + filenameStr
-        download(currentUrl, currentDist, override)
-        
-    currentTime = beginTime
-    while currentTime <= endTime:
-        yearStr = currentTime.strftime("%Y")
-        monthStr = currentTime.strftime("%m")
-        dateStr = currentTime.strftime("%Y%m%d")
-        fileSuffix = dateStr + '00_' + dateStr + '23.nc'
-        if currentTime.day == 1:
-            for t in monthlyTypeList:
-                downloadedMap[t] = False
-        for t in typeList:
-            if not downloadedMap[t]:
-                if t in monthlyTypeList:
-                    lastDay = datetime.datetime(currentTime.year, currentTime.month,
-                                                calendar.monthrange(
-                                                    currentTime.year, currentTime.month)[1])
-                    lastDayStr = lastDay.strftime("%Y%m%d")
-                    fileSuffix = yearStr + monthStr + '0100_' + lastDayStr + '23.nc'
-                for var in variableMap[t]:
-                    filenameStr = t + '/' + yearStr + monthStr + \
-                        '/' + t + '.' + var + '.' + fileSuffix
-                    currentUrl = urlPrefix + filenameStr
-                    currentDist = distDir + '/' + filenameStr
-                    download(currentUrl, currentDist, override)
-                if t in monthlyTypeList:
-                    downloadedMap[t] = True
-        currentTime += datetime.timedelta(days=1)
+    if os.path.exists(dist) and not override:
+        sys.stdout.write(ofile + ' exists. Skip.\n')
+    else:
+        sys.stdout.write('downloading ' + ofile + ' ...\n')
+        sys.stdout.flush()
+        args = ['-O', dist, url]
+        wget.run('wget', arg=args, flagMpi=False)
+        sys.stdout.write('done\n')

@@ -7,7 +7,6 @@ import socket
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
-
 def detectMachine() -> str:
     host = socket.getfqdn().lower()
     logger.warning(f'The host is {host}')
@@ -19,7 +18,6 @@ def detectMachine() -> str:
     else:
         machineID = 'unknown'
     return machineID
-
 
 def defineScratch() -> str:
     machineID = detectMachine()
