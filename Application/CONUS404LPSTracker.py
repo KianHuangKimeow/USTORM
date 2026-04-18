@@ -373,7 +373,7 @@ if __name__ == '__main__':
         '--timefilter', '3hr',
         '--logdir', logDir
     ]
-    # tempestExtremes.run('VariableProcessor', variableProcessorArg)
+    tempestExtremes.run('VariableProcessor', variableProcessorArg)
 
     # Flip the sign of vorticity in the Southern Hemisphere
     inputFileName = outputFileName
@@ -398,7 +398,7 @@ if __name__ == '__main__':
         '--regional',
         '--logdir', logDir
     ]
-    # tempestExtremes.run('VariableProcessor', variableProcessorArg)
+    tempestExtremes.run('VariableProcessor', variableProcessorArg)
     
     # Search for cyclonic regions
     inputFileName = os.path.join(workDir, 'SmoothedVo850_S1.txt')
@@ -475,7 +475,7 @@ if __name__ == '__main__':
         tempestExtremes.run('StitchBlobs', stitchBlobsArg)
         lpsBlobOutput = outputFileName
 
-    # Summary the information of each cyclonic regions, which will be used 
+    # Summarize the information of each cyclonic regions, which will be used 
     # in the SyCLoPS classifier by pairing with each low pressure system node
     inputFileName = os.path.join(workDir, 'BlobStatsInputFilenames.txt')
     with open(inputFileName, 'w') as f:
